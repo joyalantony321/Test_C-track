@@ -5,19 +5,14 @@
   <title>Fast-SCNN ONNX Navigation</title>
   <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js"></script>
   <style>
-    canvas {
-      border: 1px solid black;
-    }
-    #startBtn {
-      margin: 10px;
-      padding: 10px 20px;
-      font-size: 16px;
-    }
+    canvas { border: 1px solid black; }
+    button { margin: 5px; padding: 10px 20px; font-size: 16px; }
   </style>
 </head>
 <body>
   <h2>Fast-SCNN ONNX Navigation</h2>
   <button id="startBtn">Start Camera</button>
+  <button id="switchBtn" style="display:none;">Switch Camera</button>
   <video id="webcam" width="640" height="480" autoplay muted style="display:none;"></video>
   <canvas id="canvas" width="640" height="480"></canvas>
 
@@ -33,6 +28,8 @@
     ];
 
     let session;
+    let currentStream;
+    let useBackCamera = false; // false = front camera, true = back camera
 
     async function loadModel() {
       session = await ort.InferenceSession.create('fastscnn_campus.onnx');
@@ -46,13 +43,22 @@
       const canvas = document.getElementById('canvas');
       const ctx = canvas.getContext('2d');
 
-      // Request camera on user interaction
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 }, audio: false });
-      video.srcObject = stream;
+      async function getStream() {
+        if (currentStream) {
+          currentStream.getTracks().forEach(track => track.stop());
+        }
+        currentStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: useBackCamera ? 'environment' : 'user', width: 640, height: 480 },
+          audio: false
+        });
+        video.srcObject = currentStream;
+        await new Promise(resolve => { video.onloadedmetadata = () => resolve(); });
+        await video.play();
+        video.style.display = 'block';
+        document.getElementById('switchBtn').style.display = 'inline-block';
+      }
 
-      await new Promise(resolve => { video.onloadedmetadata = () => resolve(); });
-      video.play();
-      video.style.display = 'block';
+      await getStream();
 
       const width = video.videoWidth;
       const height = video.videoHeight;
@@ -64,7 +70,6 @@
         let frame = ctx.getImageData(0, 0, width, height);
         let data = frame.data;
 
-        // Preprocess: HWC -> CHW, normalize
         let input = new Float32Array(3 * 256 * 256);
         const scaleX = width / 256;
         const scaleY = height / 256;
@@ -75,9 +80,9 @@
             const srcY = Math.floor(y * scaleY);
             const idxSrc = (srcY * width + srcX) * 4;
             const idxDst = y * 256 + x;
-            input[idxDst] = data[idxSrc] / 255.0;           // R
-            input[idxDst + 256*256] = data[idxSrc + 1] / 255.0; // G
-            input[idxDst + 2*256*256] = data[idxSrc + 2] / 255.0; // B
+            input[idxDst] = data[idxSrc] / 255.0;
+            input[idxDst + 256*256] = data[idxSrc + 1] / 255.0;
+            input[idxDst + 2*256*256] = data[idxSrc + 2] / 255.0;
           }
         }
 
@@ -85,7 +90,6 @@
         const output = await session.run({ input: tensor });
         let pred = output.output.data;
 
-        // Reshape pred to [num_classes, H, W]
         const H = 256, W = 256, C = classes.length;
         let pred2d = Array.from({ length: H }, () => new Array(W).fill(0));
         for (let y = 0; y < H; y++) {
@@ -99,7 +103,6 @@
           }
         }
 
-        // Draw class names at largest area centers
         for (let c = 1; c < C; c++) {
           let points = [];
           for (let y = 0; y < H; y++) {
@@ -123,6 +126,12 @@
       }
 
       render();
+
+      // Switch camera button
+      document.getElementById('switchBtn').onclick = async () => {
+        useBackCamera = !useBackCamera;
+        await getStream();
+      };
     }
 
     document.getElementById('startBtn').onclick = () => {
